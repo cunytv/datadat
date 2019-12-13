@@ -1,0 +1,87 @@
+#!/bin/bash
+# This script is intended to arrange the log output of DATXtract into a csv to prep for audio processing.
+
+READ_ERROR="N"
+
+timecode2pts(){
+    TC="$1"
+    if [[ "${TC}" == "--:--:--.--" ]] ; then
+        echo "--:--:--.--"
+    else
+        HHMM="${TC:0:5}"
+        SS="${TC:6:2}"
+        FF="${TC:9:2}"
+        MOD="$(echo "${SS}%3" | bc)"
+        if [[ "${MOD}" == "2" ]] ; then
+            ADJ="-0.02"
+        elif [[ "${MOD}" == "1" ]] ; then
+            ADJ="-0.01"
+        else
+            ADJ="0"
+        fi
+        SSmmm="$(echo "${SS}" "${FF}" "${ADJ}" | awk '{printf "%05.2f", $1 + (( $2 / (100/3)) + $3) }')"
+        echo "${HHMM}:${SSmmm}"
+    fi
+}
+
+pts2s(){
+    PTS="${1}"
+    if [[ "${PTS}" == "--:--:--.--" ]] ; then
+        echo "--:--:--.--"
+    else
+        HH="${PTS:0:2}"
+        MM="${PTS:3:2}"
+        SS="${PTS:6:2}"
+        mmm="${PTS:9:3}"
+        echo "$(echo "${HH}" "${MM}" "${SS}" | awk '{printf "%d", $1 * 3600 + $2 * 60 + $3 }').${mmm}"
+    fi
+}
+
+echo "Channels,DAT Abs Time,Program Time,Sample Count,File Start,File Start (sec),File End,File End (sec)"
+CH_LAST=""
+FE_LAST=""
+FIRSTLINE="Y"
+ERRORS="N"
+while read logline ; do
+    if [[ "$logline" == "Including error frame:" ]] ; then
+        READ_ERROR="Y"
+    elif [[ "${READ_ERROR}" == "Y" ]] ;then
+        if [[ "${logline:0:9}" == "Channels:" ]] ; then
+            CH="$(echo "$logline" | awk '{print $2}')"
+        elif [[ "${logline:0:4}" == "Abs:" ]] ; then
+            ABS="$(echo "$logline" | awk '{print $2}')"
+            PROG="$(echo "$logline" | awk '{print $4}')"
+        elif [[ "${logline:0:11}" == "File start:" ]] ; then
+            FS="$(echo "$logline" | awk '{print $3}')"
+        elif [[ "${logline:0:9}" == "File end:" ]] ; then
+            FE="$(echo "$logline" | awk '{print $3}')"
+            SC="$(echo "$logline" | awk '{print $4}' | sed 's|(||g')"
+            if [ -z "${FE_LAST}" -a "$FIRSTLINE" == "Y" ] ; then
+                PTS="$(timecode2pts "${FS}")"
+                echo -n "${CH},${ABS},${PROG},${SC},${PTS},$(pts2s "${PTS}"),"
+                CH_LAST="${CH}"
+                FE_LAST="${FE}"
+            else
+                if [ "${FS}" == "${FE_LAST}" -a "${CH}" == "${CH_LAST}" ] ; then
+                    FE_LAST="${FE}"
+                else
+                    PTS_E="$(timecode2pts "${FE_LAST}")"
+                    echo "${PTS_E},$(pts2s "${PTS_E}")"
+                    PTS="$(timecode2pts "${FS}")"
+                    echo -n "${CH},${ABS},${PROG},${SC},${PTS},$(pts2s "${PTS}"),"
+                    FIRSTLINE="N"
+                    ERRORS="Y"
+                    CH_LAST="${CH}"
+                    FE_LAST="${FE}"
+                fi
+            fi
+            unset CH ABS PROG FS FE
+        fi
+    fi
+done < <(cat "${1}")
+
+if [ "${ERRORS}" == "Y" ] ; then
+    PTS_E="$(timecode2pts "${FE_LAST}")"
+    echo "${PTS_E},$(pts2s "${PTS_E}")"
+fi
+
